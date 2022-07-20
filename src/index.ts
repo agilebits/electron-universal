@@ -40,10 +40,6 @@ type MakeUniversalOpts = {
    * Minimatch pattern of paths that are allowed to be present in one of the ASAR files, but not in the other.
    */
   singleArchFiles?: string;
-  /**
-   * Minimatch pattern of binaries that are expected to be the same x64 binary in both of the ASAR files.
-   */
-  x64ArchFiles?: string;
 };
 
 const dupedFiles = (files: AppFile[]) =>
@@ -138,16 +134,6 @@ export const makeUniversalApp = async (opts: MakeUniversalOpts): Promise<void> =
       const x64Sha = await sha(path.resolve(opts.x64AppPath, machOFile.relativePath));
       const arm64Sha = await sha(path.resolve(opts.arm64AppPath, machOFile.relativePath));
       if (x64Sha === arm64Sha) {
-        if (
-          opts.x64ArchFiles === undefined ||
-          !minimatch(machOFile.relativePath, opts.x64ArchFiles, { matchBase: true })
-        ) {
-          throw new Error(
-            `Detected file "${machOFile.relativePath}" that's the same in both x64 and arm64 builds and not covered by the ` +
-              `x64ArchFiles rule: "${opts.x64ArchFiles}"`,
-          );
-        }
-
         d(
           'SHA for Mach-O file',
           machOFile.relativePath,
@@ -303,27 +289,50 @@ export const makeUniversalApp = async (opts: MakeUniversalOpts): Promise<void> =
         );
       }
     }
-
     const plistFiles = x64Files.filter((f) => f.type === AppFileType.INFO_PLIST);
     for (const plistFile of plistFiles) {
       const x64PlistPath = path.resolve(opts.x64AppPath, plistFile.relativePath);
       const arm64PlistPath = path.resolve(opts.arm64AppPath, plistFile.relativePath);
 
-      const { ElectronAsarIntegrity: x64Integrity, ...x64Plist } = plist.parse(
-        await fs.readFile(x64PlistPath, 'utf8'),
-      ) as any;
-      const { ElectronAsarIntegrity: arm64Integrity, ...arm64Plist } = plist.parse(
-        await fs.readFile(arm64PlistPath, 'utf8'),
-      ) as any;
-      if (JSON.stringify(x64Plist) !== JSON.stringify(arm64Plist)) {
+      const x64PlistBuffer = await fs.readFile(x64PlistPath);
+      const x64PlistText = x64PlistBuffer.toString('utf8');
+      let x64ParsedPlist: any;
+      const arm64PlistBuffer = await fs.readFile(arm64PlistPath);
+      const arm64PlistText = arm64PlistBuffer.toString('utf8');
+      let arm64ParsedPlist: any;
+
+      // binary plists will not contain ElectronAsarIntegrity
+      if (!x64PlistText.startsWith('bplist00')) {
+        x64ParsedPlist = plist.parse(x64PlistText) as any;
+      }
+      if (!arm64PlistText.startsWith('bplist00')) {
+        arm64ParsedPlist = plist.parse(arm64PlistText) as any;
+      }
+      if (
+        x64ParsedPlist &&
+        x64ParsedPlist.ElectronAsarIntegrity &&
+        arm64ParsedPlist &&
+        arm64ParsedPlist.ElectronAsarIntegrity
+      ) {
+        const { ElectronAsarIntegrity: x64Integrity, ...x64Plist } = x64ParsedPlist;
+        const { ElectronAsarIntegrity: arm64Integrity, ...arm64Plist } = arm64ParsedPlist;
+
+        if (JSON.stringify(x64Plist) !== JSON.stringify(arm64Plist)) {
+          throw new Error(
+            `Expected all Info.plist files to be identical when ignoring integrity when creating a universal build but "${plistFile.relativePath}" was not`,
+          );
+        }
+        // }
+        const mergedPlist = { ...x64Plist, ElectronAsarIntegrity: generatedIntegrity };
+
+        await fs.writeFile(path.resolve(tmpApp, plistFile.relativePath), plist.build(mergedPlist));
+      } else if (!x64PlistBuffer.equals(arm64PlistBuffer)) {
         throw new Error(
           `Expected all Info.plist files to be identical when ignoring integrity when creating a universal build but "${plistFile.relativePath}" was not`,
         );
+      } else {
+        await fs.writeFile(path.resolve(tmpApp, plistFile.relativePath), x64PlistBuffer);
       }
-
-      const mergedPlist = { ...x64Plist, ElectronAsarIntegrity: generatedIntegrity };
-
-      await fs.writeFile(path.resolve(tmpApp, plistFile.relativePath), plist.build(mergedPlist));
     }
 
     for (const snapshotsFile of arm64Files.filter((f) => f.type === AppFileType.SNAPSHOT)) {
