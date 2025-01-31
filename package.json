@@ -33,8 +33,7 @@
     "lint": "prettier --check \"{src,entry-asar,test}/**/*.ts\" \"*.ts\"",
     "prettier:write": "prettier --write \"{src,entry-asar,test}/**/*.ts\" \"*.ts\"",
     "prepublishOnly": "npm run build",
-    "test": "jest",
-    "prepare": "husky install"
+    "test": "jest"
   },
   "devDependencies": {
     "@electron/get": "^3.0.0",
